@@ -1,46 +1,48 @@
-from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, MessageHandler, filters
-import openai
 import os
+import logging
+import openai
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
-# إعداد التوكنات
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+logging.basicConfig(level=logging.INFO)
 
-# تحقق من التوكنات
-if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
-    raise Exception("Missing TELEGRAM_TOKEN or OPENAI_API_KEY")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-bot = Bot(token=TELEGRAM_TOKEN)
-app = Flask(__name__)
 openai.api_key = OPENAI_API_KEY
 
-@app.route('/')
-def home():
-    return 'Bot is running.'
+app = Flask(__name__)
+bot = Bot(token=BOT_TOKEN)
 
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher = Dispatcher(bot, None, workers=0)
-    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    dispatcher.process_update(update)
-    return 'ok'
-
-def handle_message(update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
-    chat_id = update.message.chat_id
 
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": user_message}]
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=200
         )
         reply = response['choices'][0]['message']['content']
-        context.bot.send_message(chat_id=chat_id, text=reply)
     except Exception as e:
-        context.bot.send_message(chat_id=chat_id, text="خطأ: " + str(e))
+        logging.error(f"Error from OpenAI: {e}")
+        reply = "حصل خطأ، حاول مرة ثانية."
+
+    await update.message.reply_text(reply)
+
+application = ApplicationBuilder().token(BOT_TOKEN).build()
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+@app.route('/')
+def home():
+    return "Bot is running"
+
+@app.route('/' + BOT_TOKEN, methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    application.update_queue.put_nowait(update)
+    return 'ok'
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    application.run_polling()
